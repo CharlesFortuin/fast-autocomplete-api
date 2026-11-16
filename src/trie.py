@@ -36,7 +36,7 @@ class Trie:
                     results.append((char + sub_word, freq))
             
             # Sort descending by frequency, then slice top K
-            results.sort(key=lambda x: x[1], reverse=True)
+            results.sort(key=lambda x: (-x[1], x[0]))
             node.top_suggestions = results[:self.top_k]
             return results
 

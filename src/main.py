@@ -1,4 +1,5 @@
 import os
+import time
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from fastapi import FastAPI, Query
@@ -14,22 +15,25 @@ app = FastAPI(
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # 1. Load dictionary dynamically from data/words.txt
+start_time = time.perf_counter()
 word_list = []
 trie = Trie(top_k=5)
 
 data_path = os.path.join("data", "words.txt")
 if os.path.exists(data_path):
-    with open(data_path, "r") as f:
-        for line in f:
-            word = line.strip().lower()
-            if word:
+    with open(data_path, "r", encoding="utf-8") as f:
+        lines = [line.strip().lower() for line in f if line.strip()]
+        total_words = len(lines)
+        for idx, word in enumerate(lines):
+            if word.isalpha():
                 word_list.append(word)
-                # Give default frequency if not specified, or parse it
-                trie.insert(word, frequency=100)
+                rank_weight = total_words - idx
+                trie.insert(word, frequency=rank_weight)
 
 # Pre-compute the top-K cache once when the server boots up
 trie.build_cache()
-
+elapsed_ms = (time.perf_counter() - start_time) * 1000
+print(f"Loaded {len(word_list):,} words and built Trie cache in {elapsed_ms:.2f} ms")
 
 @app.get("/")
 def read_root():
