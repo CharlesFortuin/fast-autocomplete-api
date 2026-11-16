@@ -1,0 +1,11 @@
+python
+pycharm
+pygame
+pypi
+performance
+programming
+developer
+fastapi
+algorithm
+autocomplete
+spellcheck
