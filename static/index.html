@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Smart Text Editor — Trie & Levenshtein Demo</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background-color: #0f172a;
+            color: #f8fafc;
+            max-width: 800px;
+            margin: 40px auto;
+            padding: 0 20px;
+        }
+        h1 { font-size: 1.5rem; margin-bottom: 0.25rem; }
+        p.subtitle { color: #94a3b8; margin-top: 0; margin-bottom: 1.5rem; font-size: 0.9rem; }
+        
+        .editor-container { position: relative; }
+        textarea {
+            width: 100%;
+            height: 220px;
+            background-color: #1e293b;
+            color: #f8fafc;
+            border: 1px solid #334155;
+            border-radius: 8px;
+            padding: 16px;
+            font-size: 1.1rem;
+            line-height: 1.6;
+            resize: vertical;
+            box-sizing: border-box;
+            outline: none;
+        }
+        textarea:focus { border-color: #38bdf8; }
+
+        .status-bar {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 8px;
+            font-size: 0.85rem;
+            color: #94a3b8;
+        }
+        .latency { color: #34d399; font-family: monospace; }
+
+        .panel {
+            margin-top: 16px;
+            background-color: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 8px;
+            padding: 12px 16px;
+            min-height: 44px;
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+        .panel-label {
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: #94a3b8;
+            margin-right: 8px;
+        }
+        .chip {
+            background-color: #334155;
+            color: #e2e8f0;
+            border: none;
+            border-radius: 6px;
+            padding: 6px 12px;
+            font-size: 0.9rem;
+            cursor: pointer;
+            transition: background 0.15s;
+        }
+        .chip:hover { background-color: #38bdf8; color: #0f172a; font-weight: 600; }
+        .chip.first { border: 1px solid #38bdf8; }
+        .chip.typo { background-color: #7f1d1d; color: #fecaca; border: 1px solid #ef4444; }
+        .chip.typo:hover { background-color: #ef4444; color: #fff; }
+    </style>
+</head>
+<body>
+
+    <h1>Trie & Levenshtein Live Editor</h1>
+    <p class="subtitle">Type at least 2 characters for O(L) prefix completions (press <strong>Tab</strong> to accept top match). Press <strong>Space</strong> to spell-check completed words.</p>
+
+    <div class="editor-container">
+        <textarea id="editor" placeholder="Start typing words from your dictionary (e.g., py, perf, dev)..."></textarea>
+    </div>
+
+    <div class="status-bar">
+        <span id="active-word-display">Active token: none</span>
+        <span class="latency" id="latency-display">API Latency: -- ms</span>
+    </div>
+
+    <div class="panel">
+        <span class="panel-label">Autocomplete:</span>
+        <div id="autocomplete-list" style="display: flex; gap: 8px; flex-wrap: wrap;">
+            <span style="color: #64748b; font-size: 0.9rem;">Waiting for input...</span>
+        </div>
+    </div>
+
+    <div class="panel">
+        <span class="panel-label">Spell-Check:</span>
+        <div id="spellcheck-list" style="display: flex; gap: 8px; flex-wrap: wrap;">
+            <span style="color: #64748b; font-size: 0.9rem;">No typos detected</span>
+        </div>
+    </div>
+
+    <script>
+        const editor = document.getElementById('editor');
+        const autocompleteList = document.getElementById('autocomplete-list');
+        const spellcheckList = document.getElementById('spellcheck-list');
+        const latencyDisplay = document.getElementById('latency-display');
+        const activeWordDisplay = document.getElementById('active-word-display');
+
+        let debounceTimer = null;
+        let currentSuggestions = [];
+        let activeWordBounds = { start: 0, end: 0, word: '' };
+
+        // Extract the word currently touching the cursor
+        function getWordAtCursor() {
+            const text = editor.value;
+            const cursor = editor.selectionStart;
+            
+            let start = cursor;
+            while (start > 0 && /[a-zA-Z]/.test(text[start - 1])) {
+                start--;
+            }
+            
+            let end = cursor;
+            while (end < text.length && /[a-zA-Z]/.test(text[end])) {
+                end++;
+            }
+            
+            return { start, end, word: text.slice(start, end) };
+        }
+
+        // Replace the active word with a selected completion or correction
+        function replaceWord(start, end, replacement) {
+            const text = editor.value;
+            editor.value = text.slice(0, start) + replacement + " " + text.slice(end);
+            const newCursor = start + replacement.length + 1;
+            editor.setSelectionRange(newCursor, newCursor);
+            editor.focus();
+            currentSuggestions = [];
+            autocompleteList.innerHTML = '<span style="color: #64748b; font-size: 0.9rem;">Waiting for input...</span>';
+        }
+
+        async function fetchAutocomplete(prefix) {
+            const t0 = performance.now();
+            const res = await fetch(`/autocomplete?prefix=${encodeURIComponent(prefix)}`);
+            const data = await res.json();
+            const t1 = performance.now();
+
+            latencyDisplay.textContent = `API Latency: ${(t1 - t0).toFixed(1)} ms`;
+            currentSuggestions = data.suggestions || [];
+
+            if (currentSuggestions.length === 0) {
+                autocompleteList.innerHTML = '<span style="color: #64748b; font-size: 0.9rem;">No prefix matches</span>';
+                return;
+            }
+
+            autocompleteList.innerHTML = '';
+            currentSuggestions.forEach((item, index) => {
+                // Handle both string responses and tuple/object responses depending on your Trie return format
+                const wordText = Array.isArray(item) ? item[0] : (item.word || item);
+                const btn = document.createElement('button');
+                btn.className = index === 0 ? 'chip first' : 'chip';
+                btn.textContent = index === 0 ? `${wordText} [Tab]` : wordText;
+                btn.onclick = () => replaceWord(activeWordBounds.start, activeWordBounds.end, wordText);
+                autocompleteList.appendChild(btn);
+            });
+        }
+
+        async function fetchSpellcheck(word, start, end) {
+            const t0 = performance.now();
+            const res = await fetch(`/spellcheck?word=${encodeURIComponent(word)}&max_distance=2`);
+            const data = await res.json();
+            const t1 = performance.now();
+
+            latencyDisplay.textContent = `API Latency: ${(t1 - t0).toFixed(1)} ms`;
+            const suggestions = data.suggestions || [];
+
+            // If exact match is the top suggestion with distance 0, word is spelled right
+            if (suggestions.length > 0) {
+                const top = suggestions[0];
+                const topWord = Array.isArray(top) ? top[0] : (top.word || top);
+                if (topWord.toLowerCase() === word.toLowerCase()) {
+                    spellcheckList.innerHTML = `<span style="color: #34d399; font-size: 0.9rem;">✓ "${word}" verified</span>`;
+                    return;
+                }
+            }
+
+            if (suggestions.length === 0) {
+                spellcheckList.innerHTML = `<span style="color: #f87171; font-size: 0.9rem;">Unknown word "${word}" (no close matches)</span>`;
+                return;
+            }
+
+            spellcheckList.innerHTML = `<span style="color: #fca5a5; font-size: 0.9rem;">Did you mean for "${word}":</span>`;
+            suggestions.forEach(item => {
+                const wordText = Array.isArray(item) ? item[0] : (item.word || item);
+                const btn = document.createElement('button');
+                btn.className = 'chip typo';
+                btn.textContent = wordText;
+                btn.onclick = () => {
+                    replaceWord(start, end, wordText);
+                    spellcheckList.innerHTML = '<span style="color: #64748b; font-size: 0.9rem;">Corrected!</span>';
+                };
+                spellcheckList.appendChild(btn);
+            });
+        }
+
+        editor.addEventListener('input', (e) => {
+            clearTimeout(debounceTimer);
+            const text = editor.value;
+            const cursor = editor.selectionStart;
+
+            // If user just typed a space or punctuation, spell-check the word right before it
+            if (e.data === ' ' || /[.,!?]/.test(e.data)) {
+                const beforeSpace = text.slice(0, cursor - 1);
+                const match = beforeSpace.match(/([a-zA-Z]+)$/);
+                if (match && match[1].length >= 2) {
+                    const finishedWord = match[1];
+                    const endIdx = cursor - 1;
+                    const startIdx = endIdx - finishedWord.length;
+                    fetchSpellcheck(finishedWord, startIdx, endIdx);
+                }
+                currentSuggestions = [];
+                autocompleteList.innerHTML = '<span style="color: #64748b; font-size: 0.9rem;">Waiting for input...</span>';
+                return;
+            }
+
+            // Otherwise, debounce autocomplete for the active word
+            activeWordBounds = getWordAtCursor();
+            activeWordDisplay.textContent = `Active token: "${activeWordBounds.word || 'none'}"`;
+
+            if (activeWordBounds.word.length < 2) {
+                currentSuggestions = [];
+                autocompleteList.innerHTML = '<span style="color: #64748b; font-size: 0.9rem;">Type at least 2 characters...</span>';
+                return;
+            }
+
+            debounceTimer = setTimeout(() => {
+                fetchAutocomplete(activeWordBounds.word);
+            }, 200);
+        });
+
+        // Allow pressing Tab to accept the top autocomplete suggestion
+        editor.addEventListener('keydown', (e) => {
+            if (e.key === 'Tab' && currentSuggestions.length > 0) {
+                e.preventDefault();
+                const top = currentSuggestions[0];
+                const wordText = Array.isArray(top) ? top[0] : (top.word || top);
+                replaceWord(activeWordBounds.start, activeWordBounds.end, wordText);
+            }
+        });
+    </script>
+</body>
+</html>

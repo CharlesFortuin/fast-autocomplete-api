@@ -1,4 +1,6 @@
 import os
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from fastapi import FastAPI, Query
 from src.trie import Trie
 from src.spellcheck import find_spelling_suggestions
@@ -8,6 +10,8 @@ app = FastAPI(
     description="A high-performance API powered by a custom Trie and Levenshtein distance spell-checker.",
     version="1.0.0"
 )
+
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # 1. Load dictionary dynamically from data/words.txt
 word_list = []
@@ -29,7 +33,7 @@ trie.build_cache()
 
 @app.get("/")
 def read_root():
-    return {"message": "Welcome to the Fast Autocomplete & Spell-Check API!"}
+    return FileResponse("static/index.html")
 
 
 @app.get("/autocomplete")
